@@ -1,115 +1,124 @@
-#Step 3: Environment Setup
+ #Environment setup -static obstacles
 
-import numpy as np
 
-class CustomUAVEnvironment:
-    def __init__(self):
-        # Environment parameters
-        self.goal = np.array([10.0, 10.0])  # Target position
-        self.state = None
-        self.obstacles = [np.array([5.0, 5.0]), np.array([7.0, 3.0])]  # Static obstacle positions
-        self.bounds = [0.0, 15.0]  # Environment bounds (x and y limits)
-        
-        # Initialize UAV dynamics
-        self.max_velocity = 2.0
-        self.time_step = 0.1  # Simulation time step
+ 1. Static Environment Setup-Fully Centralized TD3
+
+
+class StaticEnvironment:
+    def __init__(self, num_agents, state_dim, action_dim, obstacle_positions, goal_positions):
+        self.num_agents = num_agents
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.obstacle_positions = obstacle_positions
+        self.goal_positions = goal_positions
+        self.agent_states = np.random.uniform(low=0, high=10, size=(num_agents, state_dim))
 
     def reset(self):
-        """Reset the environment to the initial state."""
-        self.state = np.array([0.0, 0.0, 0.0, 0.0])  # [x, y, velocity_x, velocity_y]
-        return self.state
+        self.agent_states = np.random.uniform(low=0, high=10, size=(self.num_agents, self.state_dim))
+        return self.agent_states
 
-    def step(self, action):
-        """Perform one step in the environment."""
-        x, y, vx, vy = self.state
-        
-        # Action interpretation: Change in velocity
-        if action == 0:  # Accelerate left
-            vx -= 0.1
-        elif action == 1:  # Accelerate right
-            vx += 0.1
-        elif action == 2:  # Accelerate up
-            vy += 0.1
-        elif action == 3:  # Accelerate down
-            vy -= 0.1
-        
-        # Limit velocity to max_velocity
-        vx = np.clip(vx, -self.max_velocity, self.max_velocity)
-        vy = np.clip(vy, -self.max_velocity, self.max_velocity)
-        
-        # Update position
-        x += vx * self.time_step
-        y += vy * self.time_step
-        
-        # Ensure the UAV stays within bounds
-        x = np.clip(x, self.bounds[0], self.bounds[1])
-        y = np.clip(y, self.bounds[0], self.bounds[1])
-        
-        # Update the state
-        self.state = np.array([x, y, vx, vy])
-        
-        # Check for collisions or goal reach
-        collision = any(np.linalg.norm(self.state[:2] - obs) < 1.0 for obs in self.obstacles)
-        goal_reached = np.linalg.norm(self.state[:2] - self.goal) < 1.0
-        
-        # Calculate reward
-        reward = self._calculate_reward(collision, goal_reached)
+    def step(self, actions):
+        rewards = []
+        new_states = []
+        dones = []
 
-        # Check if the episode ends
-        done = collision or goal_reached
-        return self.state, reward, done
+        for i, action in enumerate(actions):
+            state = self.agent_states[i]
 
-    def _calculate_reward(self, collision, goal_reached):
-        """Calculate the reward for the current step."""
-        if goal_reached:
-            return 100.0  # Large reward for reaching the goal
-        if collision:
-            return -50.0  # Penalty for collision
-        return -0.1  # Small penalty for each step to encourage efficiency
+            # Update state based on action
+            new_state = state + action  # Simple dynamics: new position = current + action
+            self.agent_states[i] = new_state
+
+            # Reward: Encourage movement toward goal, penalize collision
+            distance_to_goal = np.linalg.norm(new_state - self.goal_positions[i])
+            collision = any(np.linalg.norm(new_state - obs) < 1.0 for obs in self.obstacle_positions)
+
+            reward = -distance_to_goal
+            if collision:
+                reward -= 100  # Heavy penalty for collision
+
+            rewards.append(reward)
+            new_states.append(new_state)
+            dones.append(distance_to_goal < 1.0 or collision)
+
+        return np.array(new_states), np.array(rewards), np.array(dones)
 
     def render(self):
-        """Visualize the environment (optional)."""
-        print(f"UAV position: {self.state[:2]} | Goal: {self.goal}")
-
-# Example usage
-env = CustomUAVEnvironment()
-state = env.reset()
-done = False
-
-while not done:
-    action = np.random.choice(4)  # Random action for demonstration (replace with agent's action)
-    state, reward, done = env.step(action)
-    env.render()
-
-                        
-#Explanation :
-   State Representation:
-
-State: [x, y, velocity_x, velocity_y] describes the UAV's position and velocity.
-The position (x, y) is updated based on the velocity (vx, vy) and time step.
-Actions:
-
-Four possible actions:
-Accelerate left (vx -= 0.1).
-Accelerate right (vx += 0.1).
-Accelerate upward (vy += 0.1).
-Accelerate downward (vy -= 0.1).
-Obstacles and Bounds:
-
-Static obstacles are defined as points in the environment (self.obstacles).
-Environment bounds prevent the UAV from moving outside a predefined area.
-Reward Function:
-
-Goal Reached: Large positive reward for successfully reaching the target.
-Collision: Large negative penalty for hitting an obstacle.
-Step Penalty: Small penalty for every time step to encourage efficiency.
-Episode End Condition:
-
-The episode ends if the UAV collides with an obstacle or reaches the goal.
+        pass  # Add visualization if needed
 
 
+ 2.For  Centralized TD3 Implementation
 
-Step 4:Agent Architecture Design
+
+# TD3 Agent for Static Environment
+class StaticTD3Agent(TD3Agent):
+    def __init__(self, state_dim, action_dim, num_agents):
+        super().__init__(state_dim * num_agents, action_dim * num_agents)  # Centralized state and action spaces
+        self.num_agents = num_agents
+
+    def select_action(self, states):
+        """
+        States include the concatenated states of all agents.
+        """
+        centralized_state = np.concatenate(states)
+        centralized_action = super().select_action(centralized_state)
+        return np.split(centralized_action, self.num_agents)  # Split actions for each agent
+
+
+3.Workflow Integration
+   1.Initialize the Environment and Agent:
+# Define static environment
+num_agents = 3
+state_dim = 4  # Example: [x, y, vx, vy]
+action_dim = 2  # Example: [vx, vy]
+obstacle_positions = [np.array([5, 5]), np.array([8, 2])]
+goal_positions = [np.array([10, 10]), np.array([10, 0]), np.array([0, 10])]
+
+env = StaticEnvironment(num_agents, state_dim, action_dim, obstacle_positions, goal_positions)
+
+# Initialize TD3 Agent
+agent = StaticTD3Agent(state_dim, action_dim, num_agents)
+
+
+2.Training Loop:
+ # Training Loop
+num_episodes = 500
+replay_buffer = ReplayBuffer()
+
+for episode in range(num_episodes):
+    states = env.reset()
+    episode_reward = 0
+
+    for step in range(200):  # Max steps per episode
+        actions = agent.select_action(states)
+        next_states, rewards, dones = env.step(actions)
+
+        # Store experience in replay buffer
+        replay_buffer.store(np.concatenate(states), np.concatenate(actions), 
+                            np.mean(rewards), np.concatenate(next_states), 
+                            np.any(dones))
+
+        # Update the TD3 agent
+        agent.update(replay_buffer)
+
+        states = next_states
+        episode_reward += np.mean(rewards)
+
+        if np.any(dones):
+            break
+
+    print(f"Episode {episode + 1}, Reward: {episode_reward}")
+
+
+
+
+
+
+
+
+
+
+
 
 
 
